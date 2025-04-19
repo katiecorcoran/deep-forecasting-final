@@ -9,13 +9,18 @@ import matplotlib.pyplot as plt
 from sktime.forecasting.ets import AutoETS
 from sktime.forecasting.arima import AutoARIMA
 from sktime.forecasting.base import ForecastingHorizon
+from sktime.forecasting.naive import NaiveForecaster
 
 def manual_train_test_split(y, train_size):
     split_point = int(len(y) * train_size)
     return y[:split_point], y[split_point:]
 
 def run_forecast(y_train, y_test, model, fh, **kwargs):
-    if model == 'ETS':
+    if model == 'Naive':
+        strategy = kwargs.get('strategy', 'last')
+        window_length = kwargs.get('window_length', None)
+        forecaster = NaiveForecaster(strategy=strategy, window_length=window_length)
+    elif model == 'ETS':
         forecaster = AutoETS(**kwargs)
     elif model == 'ARIMA':
         forecaster = AutoARIMA(**kwargs)
@@ -44,8 +49,6 @@ def plot_time_series(y_train, y_test, y_pred, y_forecast, title):
     plt.ylabel("Value")
     return fig
 
-
-
 def main():
     st.set_page_config(layout="wide")
     st.title("Time Series Forecasting App")
@@ -54,10 +57,19 @@ def main():
 
     with col1:
         st.header("Model Assumptions")
-        model_choice = st.selectbox("Select a model", ["ETS", "ARIMA"])
+        model_choice = st.selectbox("Select a model", ["Naive", "ETS", "ARIMA"])
         train_size = st.slider("Train size (%)", 50, 95, 80) / 100
-
-        if model_choice == "ETS":
+        
+        if model_choice == "Naive":
+            strategy = st.selectbox("Naive strategy", ["last", "mean", "drift"])
+            window_length = None
+            if strategy == "mean":
+                window_length = st.number_input("Window length (optional)", min_value=1, value=5)
+            model_params = {
+                "strategy": strategy,
+                "window_length": window_length if window_length else None,
+            }
+        elif model_choice == "ETS":
             error = st.selectbox("Error type", ["add", "mul"])
             trend = st.selectbox("Trend type", ["add", "mul", None])
             seasonal = st.selectbox("Seasonal type", ["add", "mul", None])
