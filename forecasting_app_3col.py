@@ -37,12 +37,15 @@ def run_forecast(y_train, y_test, model, fh, **kwargs):
     
     return forecaster, y_pred, y_forecast
 
-def plot_time_series(y_train, y_test, y_pred, y_forecast, title):
+def plot_time_series(y_train, y_test, results, title):
     fig, ax = plt.subplots(figsize=(12, 6))
     ax.plot(y_train.index.to_timestamp(), y_train.values, label="Train")
     ax.plot(y_test.index.to_timestamp(), y_test.values, label="Test")
-    ax.plot(y_pred.index.to_timestamp(), y_pred.values, label="Test Predictions")
-    ax.plot(y_forecast.index.to_timestamp(), y_forecast.values, label="Forecast")
+    for model, result in results.items():
+        y_pred = result['y_pred']
+        y_forecast = result['y_forecast']
+        ax.plot(y_pred.index.to_timestamp(), y_pred.values, label=f"{model} Test Predictions")
+        ax.plot(y_forecast.index.to_timestamp(), y_forecast.values, label=f"{model} Forecast")
     plt.legend()
     plt.title(title)
     plt.xlabel("Date")
@@ -57,66 +60,70 @@ def main():
 
     with col1:
         st.header("Model Assumptions")
-        model_choice = st.selectbox("Select a model", ["Naive", "ETS", "ARIMA"])
+        model_choices = st.multiselect("Select model(s) to run", ["Naive", "ETS", "ARIMA"])
         train_size = st.slider("Train size (%)", 50, 95, 80) / 100
         
-        if model_choice == "Naive":
-            strategy = st.selectbox("Naive strategy", ["last", "mean", "drift"])
-            window_length = None
-            if strategy == "mean":
-                window_length = st.number_input("Window length (optional)", min_value=1, value=5)
-            model_params = {
-                "strategy": strategy,
-                "window_length": window_length if window_length else None,
-            }
-        elif model_choice == "ETS":
-            error = st.selectbox("Error type", ["add", "mul"])
-            trend = st.selectbox("Trend type", ["add", "mul", None])
-            seasonal = st.selectbox("Seasonal type", ["add", "mul", None])
-            damped_trend = st.checkbox("Damped trend", value=False)
-            seasonal_periods = st.number_input("Seasonal periods", min_value=1, value=1)
-            model_params = {
-                "error": error,
-                "trend": trend,
-                "seasonal": seasonal,
-                "damped_trend": damped_trend,
-                "sp": seasonal_periods,
-            }
-        elif model_choice == "ARIMA":
-            st.subheader("Non-seasonal")
-            start_p = st.number_input("Min p", min_value=0, value=0)
-            max_p = st.number_input("Max p", min_value=0, value=5)
-            start_q = st.number_input("Min q", min_value=0, value=0)
-            max_q = st.number_input("Max q", min_value=0, value=5)
-            d = st.number_input("d", min_value=0, value=1)
-            
-            st.subheader("Seasonal")
-            seasonal = st.checkbox("Seasonal", value=True)
-            if seasonal:
-                start_P = st.number_input("Min P", min_value=0, value=0)
-                max_P = st.number_input("Max P", min_value=0, value=2)
-                start_Q = st.number_input("Min Q", min_value=0, value=0)
-                max_Q = st.number_input("Max Q", min_value=0, value=2)
-                D = st.number_input("D", min_value=0, value=1)
-                sp = st.number_input("Periods", min_value=1, value=12)
-            
-            model_params = {
-                "start_p": start_p,
-                "max_p": max_p,
-                "start_q": start_q,
-                "max_q": max_q,
-                "d": d,
-                "seasonal": seasonal,
-            }
-            if seasonal:
-                model_params.update({
-                    "start_P": start_P,
-                    "max_P": max_P,
-                    "start_Q": start_Q,
-                    "max_Q": max_Q,
-                    "D": D,
-                    "sp": sp
-                })
+        model_configs = {}
+        for model in model_choices:
+            with st.expander(f"{model} Parameters", expanded=False):
+                if model == "Naive":
+                    strategy = st.selectbox("Naive strategy", ["last", "mean", "drift"])
+                    window_length = None
+                    if strategy == "mean":
+                        window_length = st.number_input("Window length (optional)", min_value=1, value=5)
+                    model_params = {
+                        "strategy": strategy,
+                        "window_length": window_length if window_length else None,
+                    }
+                elif model == "ETS":
+                    error = st.selectbox("Error type", ["add", "mul"])
+                    trend = st.selectbox("Trend type", ["add", "mul", None])
+                    seasonal = st.selectbox("Seasonal type", ["add", "mul", None])
+                    damped_trend = st.checkbox("Damped trend", value=False)
+                    seasonal_periods = st.number_input("Seasonal periods", min_value=1, value=1)
+                    model_params = {
+                        "error": error,
+                        "trend": trend,
+                        "seasonal": seasonal,
+                        "damped_trend": damped_trend,
+                        "sp": seasonal_periods,
+                    }
+                elif model == "ARIMA":
+                    st.subheader("Non-seasonal")
+                    start_p = st.number_input("Min p", min_value=0, value=0)
+                    max_p = st.number_input("Max p", min_value=0, value=5)
+                    start_q = st.number_input("Min q", min_value=0, value=0)
+                    max_q = st.number_input("Max q", min_value=0, value=5)
+                    d = st.number_input("d", min_value=0, value=1)
+                    
+                    st.subheader("Seasonal")
+                    seasonal = st.checkbox("Seasonal", value=True)
+                    if seasonal:
+                        start_P = st.number_input("Min P", min_value=0, value=0)
+                        max_P = st.number_input("Max P", min_value=0, value=2)
+                        start_Q = st.number_input("Min Q", min_value=0, value=0)
+                        max_Q = st.number_input("Max Q", min_value=0, value=2)
+                        D = st.number_input("D", min_value=0, value=1)
+                        sp = st.number_input("Periods", min_value=1, value=12)
+                    
+                    model_params = {
+                        "start_p": start_p,
+                        "max_p": max_p,
+                        "start_q": start_q,
+                        "max_q": max_q,
+                        "d": d,
+                        "seasonal": seasonal,
+                    }
+                    if seasonal:
+                        model_params.update({
+                            "start_P": start_P,
+                            "max_P": max_P,
+                            "start_Q": start_Q,
+                            "max_Q": max_Q,
+                            "D": D,
+                            "sp": sp
+                        })
+            model_configs[model] = model_params       
 
     with col2:
         st.header("Data Handling")
@@ -172,20 +179,34 @@ def main():
             if 'df' in locals() and 'target_variable' in locals():
                 try:
                     y = df[target_variable]
-                    
                     # Perform train-test split
                     y_train, y_test = manual_train_test_split(y, train_size)
-
-                    forecaster, y_pred, y_forecast = run_forecast(y_train, y_test, model_choice, fh, **model_params)
-
-                    fig = plot_time_series(y_train, y_test, y_pred, y_forecast, f"{model_choice} Forecast for {target_variable}")
+                    results = {}
+                    for model in model_choices:
+                        with st.status(f"Running {model} model...") as status:
+                            try:
+                                model_params = model_configs.get(model, {})
+                                forecaster, y_pred, y_forecast = run_forecast(y_train, y_test, model, fh, **model_params)
+                                results[model] = {
+                                    "forecaster": forecaster,
+                                    "y_pred": y_pred,
+                                    "y_forecast": y_forecast
+                                }
+                                status.update(label=f"{model} model completed.", state="complete")
+                            except Exception as e:
+                                status.update(label=f"Error in {model} model: {str(e)}", state="error")
+                                st.error(f"An error occurred while running the {model} model: {str(e)}")
+                        
+                    # Plot all results
+                    st.subheader("Forecast Comparison")
+                    fig = plot_time_series(y_train, y_test, results, f"Forecast Comparison for {target_variable}")
                     st.pyplot(fig)
 
-                    st.subheader("Test Set Predictions")
-                    st.write(y_pred)
+                    # st.subheader("Test Set Predictions")
+                    # st.write(y_pred)
 
-                    st.subheader("Future Forecast Values")
-                    st.write(y_forecast)
+                    # st.subheader("Future Forecast Values")
+                    # st.write(y_forecast)
                 except Exception as e:
                     st.error(f"An error occurred during forecasting: {str(e)}")
             else:
