@@ -1,6 +1,7 @@
 # Author: Prof. Pedram Jahangiry
-# Date: 2024-10-10
-
+# Modified by: Greyson
+# Added SARIMA, Random Forest, and RNN support
+# Enhanced styling and layout (Dark Mode)
 
 import streamlit as st
 import pandas as pd
@@ -10,31 +11,149 @@ from sktime.forecasting.ets import AutoETS
 from sktime.forecasting.arima import AutoARIMA
 from sktime.forecasting.base import ForecastingHorizon
 from sktime.forecasting.naive import NaiveForecaster
+from sktime.forecasting.base.adapters import _StatsModelsAdapter
+from statsmodels.tsa.statespace.sarimax import SARIMAX as StatsSARIMAX
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.preprocessing import StandardScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, SimpleRNN
+from tensorflow.keras.optimizers import Adam
+
+# Custom CSS for dark mode and title styling
+st.markdown("""
+    <style>
+    body, .css-18e3th9, .css-1d391kg, .css-1cpxqw2, .sidebar .sidebar-content {
+        background-color: #0e1117 !important;
+        color: #f5f5f5 !important;
+    }
+    .sidebar .sidebar-content {
+        background-color: #1c1f26 !important;
+    }
+    h1 {
+        font-size: 4em !important;
+        text-align: center;
+        color: #f5f5f5;
+        margin-top: 0.5em;
+        margin-bottom: 1em;
+    }
+    .block-container {
+        padding: 2rem 3rem;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 def manual_train_test_split(y, train_size):
     split_point = int(len(y) * train_size)
     return y[:split_point], y[split_point:]
+
+# Removed duplicate title to avoid rendering twice
+# st.title("Time Series Forecasting App")
+
+class SARIMAXForecaster(_StatsModelsAdapter):
+    def __init__(self, order=(1, 1, 1), seasonal_order=(1, 1, 1, 12)):
+        super().__init__()
+        self._kwargs = {"order": order, "seasonal_order": seasonal_order}
+
+    _tags = {"python_version": None, "univariate-only": True, "requires-fh-in-fit": False}
+
+    def _fit_forecaster(self, y, X=None):
+        self._forecaster = StatsSARIMAX(
+            endog=y,
+            order=self._kwargs["order"],
+            seasonal_order=self._kwargs["seasonal_order"],
+            enforce_stationarity=False,
+            enforce_invertibility=False,
+        ).fit(disp=False)
+
+
+
+def create_lagged_features(series, n_lags):
+    df = pd.DataFrame({"y": series})
+    for i in range(1, n_lags + 1):
+        df[f"lag_{i}"] = df["y"].shift(i)
+    df.dropna(inplace=True)
+    return df
+
+def build_rnn_model(input_shape):
+    model = Sequential()
+    model.add(SimpleRNN(50, activation='relu', input_shape=input_shape))
+    model.add(Dense(1))
+    model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
+    return model
 
 def run_forecast(y_train, y_test, model, fh, **kwargs):
     if model == 'Naive':
         strategy = kwargs.get('strategy', 'last')
         window_length = kwargs.get('window_length', None)
         forecaster = NaiveForecaster(strategy=strategy, window_length=window_length)
+        forecaster.fit(y_train)
+        y_pred = forecaster.predict(fh=ForecastingHorizon(y_test.index, is_relative=False))
+        last_date = y_test.index[-1]
+        future_dates = pd.period_range(start=last_date + 1, periods=fh, freq=y_train.index.freq)
+        future_horizon = ForecastingHorizon(future_dates, is_relative=False)
+        y_forecast = forecaster.predict(fh=future_horizon)
     elif model == 'ETS':
         forecaster = AutoETS(**kwargs)
+        forecaster.fit(y_train)
+        y_pred = forecaster.predict(fh=ForecastingHorizon(y_test.index, is_relative=False))
+        last_date = y_test.index[-1]
+        future_dates = pd.period_range(start=last_date + 1, periods=fh, freq=y_train.index.freq)
+        future_horizon = ForecastingHorizon(future_dates, is_relative=False)
+        y_forecast = forecaster.predict(fh=future_horizon)
     elif model == 'ARIMA':
         forecaster = AutoARIMA(**kwargs)
+        forecaster.fit(y_train)
+        y_pred = forecaster.predict(fh=ForecastingHorizon(y_test.index, is_relative=False))
+        last_date = y_test.index[-1]
+        future_dates = pd.period_range(start=last_date + 1, periods=fh, freq=y_train.index.freq)
+        future_horizon = ForecastingHorizon(future_dates, is_relative=False)
+        y_forecast = forecaster.predict(fh=future_horizon)
+    elif model == 'SARIMA':
+        order = kwargs.get('order', (1, 1, 1))
+        seasonal_order = kwargs.get('seasonal_order', (1, 1, 1, 12))
+        forecaster = SARIMAXForecaster(order=order, seasonal_order=seasonal_order)
+        forecaster.fit(y_train)
+        y_pred = forecaster.predict(fh=ForecastingHorizon(y_test.index, is_relative=False))
+        last_date = y_test.index[-1]
+        future_dates = pd.period_range(start=last_date + 1, periods=fh, freq=y_train.index.freq)
+        future_horizon = ForecastingHorizon(future_dates, is_relative=False)
+        y_forecast = forecaster.predict(fh=future_horizon)
+    elif model == 'RandomForest':
+        n_lags = kwargs.get('n_lags', 5)
+        df_train = create_lagged_features(y_train, n_lags)
+        X_train = df_train.drop(columns="y").values
+        y_train_trimmed = df_train["y"].values
+        model_rf = RandomForestRegressor(n_estimators=100)
+        model_rf.fit(X_train, y_train_trimmed)
+        df_test = create_lagged_features(pd.concat([y_train[-n_lags:], y_test]), n_lags)
+        X_test = df_test.drop(columns="y").values
+        y_pred = pd.Series(model_rf.predict(X_test), index=df_test.index)
+        last_known = pd.concat([y_train, y_test]).iloc[-n_lags:]
+        forecast_input = create_lagged_features(pd.concat([last_known, pd.Series([0]*fh)])).drop(columns="y").values[:fh]
+        y_forecast = pd.Series(model_rf.predict(forecast_input), index=pd.period_range(start=y_test.index[-1]+1, periods=fh, freq=y_train.index.freq))
+    elif model == 'RNN':
+        n_lags = kwargs.get('n_lags', 5)
+        df_train = create_lagged_features(y_train, n_lags)
+        X_train = df_train.drop(columns="y").values
+        y_train_trimmed = df_train["y"].values
+        X_train = X_train.reshape((X_train.shape[0], X_train.shape[1], 1))
+        model_rnn = build_rnn_model((n_lags, 1))
+        model_rnn.fit(X_train, y_train_trimmed, epochs=50, verbose=0)
+        df_test = create_lagged_features(pd.concat([y_train[-n_lags:], y_test]), n_lags)
+        X_test = df_test.drop(columns="y").values
+        X_test = X_test.reshape((X_test.shape[0], X_test.shape[1], 1))
+        y_pred = pd.Series(model_rnn.predict(X_test).flatten(), index=df_test.index)
+        future_input = pd.concat([y_train, y_test]).iloc[-n_lags:].values
+        y_forecast_values = []
+        for _ in range(fh):
+            input_seq = np.array(future_input[-n_lags:]).reshape((1, n_lags, 1))
+            next_val = model_rnn.predict(input_seq).flatten()[0]
+            y_forecast_values.append(next_val)
+            future_input = np.append(future_input, next_val)
+        y_forecast = pd.Series(y_forecast_values, index=pd.period_range(start=y_test.index[-1]+1, periods=fh, freq=y_train.index.freq))
     else:
         raise ValueError("Unsupported model")
-    
-    forecaster.fit(y_train)
-    y_pred = forecaster.predict(fh=ForecastingHorizon(y_test.index, is_relative=False))
-    
-    last_date = y_test.index[-1]
-    future_dates = pd.period_range(start=last_date + 1, periods=fh, freq=y_train.index.freq)
-    future_horizon = ForecastingHorizon(future_dates, is_relative=False)
-    y_forecast = forecaster.predict(fh=future_horizon)
-    
+
     return forecaster, y_pred, y_forecast
 
 def plot_time_series(y_train, y_test, results, title):
@@ -53,164 +172,95 @@ def plot_time_series(y_train, y_test, results, title):
     return fig
 
 def main():
-    st.set_page_config(layout="wide")
+    if 'example_shown' not in st.session_state:
+        st.session_state.example_shown = True
     st.title("Time Series Forecasting App")
 
-    col1, col2, col3 = st.columns([1.5, 3.5, 5])
+    if st.session_state.example_shown:
+        st.markdown("""
+        ### Example Forecast Visualization
+        Here's an example of what the forecast output might look like. This will disappear once you upload your own dataset.
+        """)
+        example_dates = pd.date_range(start="2022-01-01", periods=24, freq='M').to_period('M')
+        example_values = pd.Series(np.sin(np.linspace(0, 3 * np.pi, 24)) * 100 + 200, index=example_dates)
+        example_forecast = example_values[-6:] + np.random.normal(0, 10, size=6)
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(example_values.index.to_timestamp(), example_values.values, label="Historical Data")
+        ax.plot(example_values.index[-6:].to_timestamp(), example_forecast, label="Example Forecast")
+        plt.title("Example Forecast Plot")
+        plt.xlabel("Date")
+        plt.ylabel("Value")
+        plt.legend()
+        st.pyplot(fig)
+    st.sidebar.header("Configuration")
 
-    with col1:
-        st.header("Model Assumptions")
-        model_choices = st.multiselect("Select model(s) to run", ["Naive", "ETS", "ARIMA"])
-        train_size = st.slider("Train size (%)", 50, 95, 80) / 100
-        
-        model_configs = {}
-        for model in model_choices:
-            with st.expander(f"{model} Parameters", expanded=False):
-                if model == "Naive":
-                    strategy = st.selectbox("Naive strategy", ["last", "mean", "drift"])
-                    window_length = None
-                    if strategy == "mean":
-                        window_length = st.number_input("Window length (optional)", min_value=1, value=5)
-                    model_params = {
-                        "strategy": strategy,
-                        "window_length": window_length if window_length else None,
-                    }
-                elif model == "ETS":
-                    error = st.selectbox("Error type", ["add", "mul"])
-                    trend = st.selectbox("Trend type", ["add", "mul", None])
-                    seasonal = st.selectbox("Seasonal type", ["add", "mul", None])
-                    damped_trend = st.checkbox("Damped trend", value=False)
-                    seasonal_periods = st.number_input("Seasonal periods", min_value=1, value=1)
-                    model_params = {
-                        "error": error,
-                        "trend": trend,
-                        "seasonal": seasonal,
-                        "damped_trend": damped_trend,
-                        "sp": seasonal_periods,
-                    }
-                elif model == "ARIMA":
-                    st.subheader("Non-seasonal")
-                    start_p = st.number_input("Min p", min_value=0, value=0)
-                    max_p = st.number_input("Max p", min_value=0, value=5)
-                    start_q = st.number_input("Min q", min_value=0, value=0)
-                    max_q = st.number_input("Max q", min_value=0, value=5)
-                    d = st.number_input("d", min_value=0, value=1)
-                    
-                    st.subheader("Seasonal")
-                    seasonal = st.checkbox("Seasonal", value=True)
-                    if seasonal:
-                        start_P = st.number_input("Min P", min_value=0, value=0)
-                        max_P = st.number_input("Max P", min_value=0, value=2)
-                        start_Q = st.number_input("Min Q", min_value=0, value=0)
-                        max_Q = st.number_input("Max Q", min_value=0, value=2)
-                        D = st.number_input("D", min_value=0, value=1)
-                        sp = st.number_input("Periods", min_value=1, value=12)
-                    
-                    model_params = {
-                        "start_p": start_p,
-                        "max_p": max_p,
-                        "start_q": start_q,
-                        "max_q": max_q,
-                        "d": d,
-                        "seasonal": seasonal,
-                    }
-                    if seasonal:
-                        model_params.update({
-                            "start_P": start_P,
-                            "max_P": max_P,
-                            "start_Q": start_Q,
-                            "max_Q": max_Q,
-                            "D": D,
-                            "sp": sp
-                        })
-            model_configs[model] = model_params       
+    model_choices = st.sidebar.multiselect("Select model(s)", ["Naive", "ETS", "ARIMA", "SARIMA", "RandomForest", "RNN"])
+    fh = st.sidebar.number_input("Forecast horizon", min_value=1, value=12)
+    train_size = st.sidebar.slider("Train size (%)", 50, 95, 80) / 100
 
-    with col2:
-        st.header("Data Handling")
-        uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
-        if uploaded_file is not None:
-            try:
-                # Read the CSV file
-                df = pd.read_csv(uploaded_file)
-                
-                # Allow user to select the frequency
-                freq_options = ['D', 'W', 'M', 'Q', 'Y']
-                freq = st.selectbox("Select the data frequency", freq_options)
-                
-                # Convert the index to datetime and then to PeriodIndex
-                df['date'] = pd.to_datetime(df.iloc[:, 0], errors='coerce')
-                df = df.set_index('date')
-                df = df.sort_index()  # Ensure the index is sorted
-                df.index = df.index.to_period(freq)
-                
-                # Remove any rows with NaT in the index
-                df = df.loc[df.index.notnull()]
-                
-                st.subheader("Data Preview")
-                st.write(df.head())
+    use_example = st.sidebar.checkbox("Use example data")
+    uploaded_file = st.sidebar.file_uploader("Upload your CSV file", type=["csv"])
 
-                # Filter out non-numeric columns
-                numeric_columns = df.select_dtypes(include=[np.number]).columns.tolist()
-                
-                if not numeric_columns:
-                    st.error("No numeric columns found in the uploaded data. Please ensure your CSV contains numeric data for forecasting.")
-                else:
-                    target_variable = st.selectbox("Select your target variable", numeric_columns)
+    if use_example:
+        st.session_state.example_shown = False
+        df = pd.DataFrame({
+            "date": pd.date_range(start="2022-01-01", periods=20, freq='M'),
+            "value": [120, 130, 125, 140, 150, 160, 155, 165, 170, 180,
+                       190, 200, 210, 220, 215, 225, 230, 235, 240, 250]
+        })
+        freq = st.sidebar.selectbox("Frequency", options=['D', 'W', 'M', 'Q', 'Y'], index=2)
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+        df = df.set_index('date').sort_index()
+        df.index = df.index.to_period(freq)
+        numeric_columns = df.select_dtypes(include=np.number).columns.tolist()
+        target = st.sidebar.selectbox("Target variable", numeric_columns)
 
-                    # Plot the time series of the selected target variable
-                    st.subheader(f"Time Series Plot: {target_variable}")
-                    fig, ax = plt.subplots(figsize=(10, 4))
-                    ax.plot(df.index.to_timestamp(), df[target_variable])
-                    plt.title(f"{target_variable} Time Series")
-                    plt.xlabel("Date")
-                    plt.ylabel("Value")
-                    st.pyplot(fig)
+        run_button = st.sidebar.button("Run Forecast")
 
-            except Exception as e:
-                st.error(f"An error occurred while processing the file: {str(e)}")
-                st.error("Please ensure your CSV file is properly formatted with a date column and numeric data for forecasting.")
+        st.subheader("Preview of Data")
+        st.write(df.head())
 
-    with col3:
-        st.header("Forecast Results")
-        fh = st.number_input("Number of periods to forecast", min_value=1, value=10)
-        run_forecast_button = st.button("Run Forecast")
-        
-        if run_forecast_button:
-            if 'df' in locals() and 'target_variable' in locals():
+        y = df[target]
+        y_train, y_test = manual_train_test_split(y, train_size)
+
+        results = {}
+
+        if run_button:
+            for model in model_choices:
+                with st.spinner(f"Running {model}..."):
+                    st.write(f"### Running {model}...")
+                    params = {}
+                    if model in ['Naive']:
+                        params['strategy'] = 'last'
+                    if model in ['RandomForest', 'RNN']:
+                        params['n_lags'] = 5
+                    if model == 'SARIMA':
+                        params['order'] = (1, 1, 1)
+                        params['seasonal_order'] = (1, 1, 1, 12)
+                    try:
+                        forecaster, y_pred, y_forecast = run_forecast(y_train, y_test, model, fh, **params)
+                        results[model] = {"y_pred": y_pred, "y_forecast": y_forecast}
+                    except Exception as e:
+                        st.error(f"Error in model {model}: {e}")
+                params = {}
+                if model in ['Naive']:
+                    params['strategy'] = 'last'
+                if model in ['RandomForest', 'RNN']:
+                    params['n_lags'] = 5
+                if model == 'SARIMA':
+                    params['order'] = (1, 1, 1)
+                    params['seasonal_order'] = (1, 1, 1, 12)
                 try:
-                    y = df[target_variable]
-                    # Perform train-test split
-                    y_train, y_test = manual_train_test_split(y, train_size)
-                    results = {}
-                    for model in model_choices:
-                        with st.status(f"Running {model} model...") as status:
-                            try:
-                                model_params = model_configs.get(model, {})
-                                forecaster, y_pred, y_forecast = run_forecast(y_train, y_test, model, fh, **model_params)
-                                results[model] = {
-                                    "forecaster": forecaster,
-                                    "y_pred": y_pred,
-                                    "y_forecast": y_forecast
-                                }
-                                status.update(label=f"{model} model completed.", state="complete")
-                            except Exception as e:
-                                status.update(label=f"Error in {model} model: {str(e)}", state="error")
-                                st.error(f"An error occurred while running the {model} model: {str(e)}")
-                        
-                    # Plot all results
-                    st.subheader("Forecast Comparison")
-                    fig = plot_time_series(y_train, y_test, results, f"Forecast Comparison for {target_variable}")
-                    st.pyplot(fig)
-
-                    # st.subheader("Test Set Predictions")
-                    # st.write(y_pred)
-
-                    # st.subheader("Future Forecast Values")
-                    # st.write(y_forecast)
+                    forecaster, y_pred, y_forecast = run_forecast(y_train, y_test, model, fh, **params)
+                    results[model] = {"y_pred": y_pred, "y_forecast": y_forecast}
                 except Exception as e:
-                    st.error(f"An error occurred during forecasting: {str(e)}")
-            else:
-                st.warning("Please upload data and select a target variable before running the forecast.")
+                    st.error(f"Error in model {model}: {e}")
+
+        if results:
+            st.subheader("Forecast Comparison")
+            fig = plot_time_series(y_train, y_test, results, "Forecast Results")
+            st.pyplot(fig)
 
 if __name__ == "__main__":
     main()
+
