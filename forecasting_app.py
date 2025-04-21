@@ -1,7 +1,3 @@
-# Author: Prof. Pedram Jahangiry
-# Date: 2024-10-10
-
-
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -10,8 +6,10 @@ from utils import (
     manual_train_test_split,
     calculate_metrics,
     rank_and_style_metrics,
+    fetch_stock_data,
     MODEL_REGISTRY
 )
+from datetime import datetime, timedelta
 
 
 def plot_time_series(y_train, y_test, results, title):
@@ -60,6 +58,15 @@ def get_model_help_text(model):
         **Random Forest Parameters:**
         - `n_lags`: Number of previous observations used as features
         """
+    elif model == "RNN":
+        return """
+        **RNN Parameters:**
+        
+        - `n_lags`: Number of previous time steps used as input features.
+        - `units`: Number of RNN units (neurons) in the layer.
+        - `n_epochs`: Number of training epochs.
+        - `batch_size`: Number of samples per training batch.
+        """
     return ""
 
 
@@ -67,13 +74,13 @@ def main():
     st.set_page_config(layout="wide")
     st.title("Time Series Forecasting App")
 
-    col1, col2, col3 = st.columns([3, 3, 4])
+    col1, col2 = st.sidebar.columns(2)
+    df = st.session_state.get("df", None)
 
     with col1:
-        st.header("Model Assumptions")
+        st.subheader("Model Assumptions")
         model_choices = st.multiselect("Select model(s) to run", list(MODEL_REGISTRY.keys()))
         train_size = st.slider("Train size (%)", 50, 95, 80) / 100
-        
         model_configs = {}
         for model in model_choices:
             model_params = {}
@@ -146,23 +153,77 @@ def main():
                         st.info(get_model_help_text(model))
                     n_lags = st.number_input("Number of lags", min_value=1, value=5)
                     model_params = {"n_lags": n_lags}
+                elif model == "RNN":
+                    if st.checkbox(f"Show help for {model} parameters", key=f"{model}_help"):
+                        st.info(get_model_help_text(model))
+                    n_lags = st.number_input("Number of lags", min_value=1, value=5)
+                    units = st.number_input("Number of RNN units", min_value=1, value=50)
+                    n_epochs = st.number_input("Number of epochs", min_value=1, value=10)
+                    batch_size = st.number_input("Batch size", min_value=1, value=32)
+                    model_params = {"n_lags": n_lags, "n_epochs": n_epochs, "batch_size": batch_size, "units": units}
+                elif model == "LSTM":
+                    if st.checkbox(f"Show help for {model} parameters", key=f"{model}_help"):
+                        st.info(get_model_help_text(model))
+                    lstm_units = st.number_input("LSTM Units", min_value=10, value=50)
+                    lstm_learning_rate = st.number_input("LSTM Learning Rate", min_value=0.0001, value=0.001, format="%.4f")
+                    lstm_epochs = st.number_input("LSTM Training Epochs", min_value=10, value=50)
+                    lstm_n_lags = st.number_input("LSTM Number of Lags", min_value=1, value=10)
+                    model_params = {
+                        "units": lstm_units,
+                        "learning_rate": lstm_learning_rate,
+                        "n_epochs": lstm_epochs,
+                        "n_lags": lstm_n_lags,
+                    }
+                elif model == "XGBoost":
+                    xgb_n_estimators = st.number_input("XGBoost Number of Trees", min_value=10, value=100)
+                    xgb_max_depth = st.number_input("XGBoost Max Depth", min_value=1, value=5)
+                    xgb_learning_rate = st.number_input("XGBoost Learning Rate", min_value=0.01, value=0.1, format="%.2f")
+                    xgb_n_lags = st.number_input("XGBoost Number of Lags", min_value=1, value=10)
+                    model_params = {
+                        "n_estimators": xgb_n_estimators,
+                        "max_depth": xgb_max_depth,
+                        "learning_rate": xgb_learning_rate,
+                        "n_lags": xgb_n_lags,
+                    }
             model_configs[model] = model_params       
-
+    
     with col2:
-        st.header("Data Handling")
-        use_example = st.checkbox("Use example data", value=False)
-        uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
-
-        if use_example:
-            file = "AEP_hourly.csv"
-        else:
-            file = uploaded_file
+        st.subheader("Data Source")
+        data_source = st.radio("Choose data source", ["Upload CSV", "Use Example Data", "Yahoo Finance"])
+        if data_source == "Upload CSV":
+            st.info("Upload your own CSV file.")
+            uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
+            if uploaded_file is not None:
+                df = pd.read_csv(uploaded_file)
+                st.success("File uploaded successfully.")
+        elif data_source == "Use Example Data":
+            st.info("Using example data: AEP_hourly.csv")
+            df = pd.read_csv("AEP_hourly.csv")
+            st.success("Example data loaded successfully.")
+        elif data_source == "Yahoo Finance":
+            st.info("Using Yahoo Finance data. Please enter the stock ticker and date range.")
+            ticker = st.text_input("Stock Ticker (e.g., AAPL)", "AAPL")
+            end_date = datetime.now().strftime('%Y-%m-%d')
+            start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+            date_range = st.date_input(
+                "Select date range",
+                value=(datetime.strptime(start_date, '%Y-%m-%d'), datetime.strptime(end_date, '%Y-%m-%d')),
+                min_value=datetime(2010, 1, 1),
+                max_value=datetime.now()
+            )
+            freq = st.selectbox("Frequency", options=['1d', '1wk', '1mo'], index=0)
+            if st.button("Fetch Stock Data"):
+                with st.spinner(f"Fetching data for {ticker}..."):
+                    df = fetch_stock_data(ticker, date_range[0].strftime('%Y-%m-%d'), 
+                                         date_range[1].strftime('%Y-%m-%d'), freq)
+                    if df is not None:
+                        st.success(f"Successfully fetched data for {ticker}")
+                    else:
+                        st.error(f"Failed to fetch data for {ticker}")
             
-        if file is not None:
+        if df is not None:
+            st.session_state.df = df
             try:
-                # Read the CSV file
-                df = pd.read_csv(file)
-
                 # Allow user to select the frequency
                 freq_options = ['D', 'W', 'M', 'Q', 'Y', 'H']
                 freq = st.selectbox("Select the data frequency", freq_options)
@@ -196,56 +257,54 @@ def main():
                 st.error(f"An error occurred while processing the file: {str(e)}")
                 st.error("Please ensure your CSV file is properly formatted with a date column and numeric data for forecasting.")
 
-    with col3:
-        st.header("Forecast Results")
-        fh = st.number_input("Number of periods to forecast", min_value=1, value=10)
-        run_forecast_button = st.button("Run Forecast")
-        
-        if run_forecast_button:
-            if 'y' in locals():
-                try:
-                    # Perform train-test split
-                    y_train, y_test = manual_train_test_split(y, train_size)
-                    results = {}
-                    for model in model_choices:
-                        with st.status(f"Running {model} model...") as status:
-                            try:
-                                model_params = model_configs.get(model, {})
-                                forecaster_func = MODEL_REGISTRY[model]
-                                forecaster, y_pred, y_forecast = forecaster_func(y_train, y_test, fh, **model_params)
-                                metrics = calculate_metrics(y_test.loc[y_pred.index], y_pred)
-                                results[model] = {
-                                    "forecaster": forecaster,
-                                    "y_pred": y_pred,
-                                    "y_forecast": y_forecast,
-                                    "metrics": metrics,
-                                }
-                                status.update(label=f"{model} model completed.", state="complete")
-                            except Exception as e:
-                                status.update(label=f"Error in {model} model: {str(e)}", state="error")
-                                st.error(f"An error occurred while running the {model} model: {str(e)}")
-                        
-                    # Plot all results
-                    st.subheader("Forecast Comparison")
-                    st.subheader("Model Comparison Metrics")
-                    metrics_df = pd.DataFrame({
-                        model: res["metrics"]
-                        for model, res in results.items()
-                    }).T[["MAE", "RMSE", "MAPE"]]
-                    styled_metrics = rank_and_style_metrics(metrics_df, sort_by="MAPE")
-                    st.dataframe(styled_metrics)
-                    fig = plot_time_series(y_train, y_test, results, f"Forecast Comparison for {target_variable}")
-                    st.pyplot(fig)
+    st.header("Forecast Results")
+    fh = st.number_input("Number of periods to forecast", min_value=1, value=10)
+    run_forecast_button = st.button("Run Forecast")
+    
+    if run_forecast_button:
+        if 'y' in locals():
+            try:
+                # Perform train-test split
+                y_train, y_test = manual_train_test_split(y, train_size)
+                results = {}
+                for model in model_choices:
+                    with st.status(f"Running {model} model...") as status:
+                        try:
+                            model_params = model_configs.get(model, {})
+                            forecaster_func = MODEL_REGISTRY[model]
+                            forecaster, y_pred, y_forecast = forecaster_func(y_train, y_test, fh, **model_params)
+                            metrics = calculate_metrics(y_test.loc[y_pred.index], y_pred)
+                            results[model] = {
+                                "forecaster": forecaster,
+                                "y_pred": y_pred,
+                                "y_forecast": y_forecast,
+                                "metrics": metrics,
+                            }
+                            status.update(label=f"{model} model completed.", state="complete")
+                        except Exception as e:
+                            status.update(label=f"Error in {model} model: {str(e)}", state="error")
+                            st.error(f"An error occurred while running the {model} model: {str(e)}")
+                    
+                # Plot all results
+                st.subheader("Forecast Comparison")
+                metrics_df = pd.DataFrame({
+                    model: res["metrics"]
+                    for model, res in results.items()
+                }).T[["MAE", "RMSE", "MAPE"]]
+                styled_metrics = rank_and_style_metrics(metrics_df, sort_by="MAPE")
+                st.dataframe(styled_metrics)
+                fig = plot_time_series(y_train, y_test, results, f"Forecast Comparison for {target_variable}")
+                st.pyplot(fig)
 
-                    # st.subheader("Test Set Predictions")
-                    # st.write(y_pred)
+                # st.subheader("Test Set Predictions")
+                # st.write(y_pred)
 
-                    # st.subheader("Future Forecast Values")
-                    # st.write(y_forecast)
-                except Exception as e:
-                    st.error(f"An error occurred during forecasting: {str(e)}")
-            else:
-                st.warning("Please upload data and select a target variable before running the forecast.")
+                # st.subheader("Future Forecast Values")
+                # st.write(y_forecast)
+            except Exception as e:
+                st.error(f"An error occurred during forecasting: {str(e)}")
+        else:
+            st.warning("Please upload data and select a target variable before running the forecast.")
 
 if __name__ == "__main__":
     main()
