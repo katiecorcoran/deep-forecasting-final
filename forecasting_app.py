@@ -67,6 +67,24 @@ def get_model_help_text(model):
         - `n_epochs`: Number of training epochs.
         - `batch_size`: Number of samples per training batch.
         """
+    elif model == "LSTM":
+        return """
+        **LSTM Parameters:**
+
+        - `units`: Number of neurons in the LSTM layer.
+        - `learning_rate`: Learning rate for the optimizer. Lower values = slower learning but more stability.
+        - `n_epochs`: Number of times the model trains on the full dataset.
+        - `n_lags`: Number of past time steps used as input.
+        """
+    elif model == "XGBoost":
+        return """
+        **XGBoost Parameters:**
+
+        - `n_estimators`: Number of boosting rounds (trees).
+        - `max_depth`: Maximum tree depth. Higher = more complex trees.
+        - `learning_rate`: Step size shrinkage used to prevent overfitting.
+        - `n_lags`: Number of previous time steps used as input features.
+        """
     return ""
 
 
@@ -175,6 +193,8 @@ def main():
                         "n_lags": lstm_n_lags,
                     }
                 elif model == "XGBoost":
+                    if st.checkbox(f"Show help for {model} parameters", key=f"{model}_help"):
+                        st.info(get_model_help_text(model))
                     xgb_n_estimators = st.number_input("XGBoost Number of Trees", min_value=10, value=100)
                     xgb_max_depth = st.number_input("XGBoost Max Depth", min_value=1, value=5)
                     xgb_learning_rate = st.number_input("XGBoost Learning Rate", min_value=0.01, value=0.1, format="%.2f")
