@@ -53,8 +53,7 @@ def fetch_stock_data(ticker, start_date, end_date, freq='1d'):
         
         return df
     except Exception as e:
-        st.error(f"Error fetching data for {ticker}: {str(e)}")
-        return None
+        raise ValueError(f"Error fetching data for {ticker}: {e}")
 
 
 # Preprocessing
@@ -117,6 +116,14 @@ def run_arima_model(y_train, y_test, fh, **kwargs):
 
 def run_rf_model(y_train, y_test, fh, **kwargs):
     n_lags = kwargs.get('n_lags', 5)
+    difference_data = kwargs.get('difference_data', False)
+    
+    if difference_data:
+        last_test_value = y_test.iloc[-1]
+        last_train_value = y_train.iloc[-1]
+        
+        y_train = y_train.diff()
+        y_test = y_test.diff()
     
     df_train = create_lagged_features(y_train, n_lags)
     X_train = df_train.drop(columns="y").values
@@ -125,12 +132,11 @@ def run_rf_model(y_train, y_test, fh, **kwargs):
     model = RandomForestRegressor(n_estimators=100, random_state=42)
     model.fit(X_train, y_train_trimmed)
     
-    combined = pd.concat([y_train[-n_lags:], y_test])
-    df_test = create_lagged_features(combined, n_lags)
+    df_test = create_lagged_features(y_test, n_lags)
     X_test = df_test.drop(columns="y").values
-    y_pred = pd.Series(model.predict(X_test), index=df_test.index)
+    y_pred_values = model.predict(X_test)
     
-    forecast_input = list(y_train[-n_lags:].values)
+    forecast_input = list(y_test[-n_lags:].values)
     y_forecast_values = []
     
     for _ in range(fh):
@@ -138,22 +144,17 @@ def run_rf_model(y_train, y_test, fh, **kwargs):
         next_pred = model.predict(lag_features)[0]
         y_forecast_values.append(next_pred)
         forecast_input.append(next_pred)
+        
+    if difference_data:
+        y_pred_values = last_train_value + np.cumsum(y_pred_values)
+        y_forecast_values = last_test_value + np.cumsum(y_forecast_values)
     
     future_idx = pd.period_range(start=y_test.index[-1]+1, periods=fh, freq=y_train.index.freq)
     y_forecast = pd.Series(y_forecast_values, index=future_idx)
+    y_pred = pd.Series(y_pred_values, index=df_test.index)
+
     
     return model, y_pred, y_forecast
-
-
-def build_multioutput_dataset(series, input_steps, output_steps):
-    series = np.array(series)
-    total_len = len(series)
-    n_samples = total_len - input_steps - output_steps + 1
-
-    X = np.array([series[i:i + input_steps] for i in range(n_samples)])
-    Y = np.array([series[i + input_steps:i + input_steps + output_steps] for i in range(n_samples)])
-
-    return X, Y
 
 def run_neural_net_model(y_train, y_test, fh, **kwargs):
     Tx = kwargs.get('n_lags', 5)
@@ -253,7 +254,7 @@ def run_xgboost_model(y_train, y_test, fh, **kwargs):
     X_test = df_test.drop(columns="y").values
     y_pred = pd.Series(model.predict(X_test), index=df_test.index)
     
-    forecast_input = list(pd.concat([y_train, y_test]).iloc[-n_lags:].values)
+    forecast_input = list(y_test[-n_lags:].values)
     y_forecast_values = []
     for _ in range(fh):
         lag_features = np.array(forecast_input[-n_lags:]).reshape(1, -1)
@@ -291,7 +292,6 @@ MODEL_REGISTRY = {
     'Naive': run_naive_model,
     'ETS': run_ets_model,
     'ARIMA': run_arima_model,
-    # 'SARIMA': run_sarima_model,
     'RandomForest': run_rf_model,
     'NeuralNet': run_neural_net_model,
     'XGBoost': run_xgboost_model,
