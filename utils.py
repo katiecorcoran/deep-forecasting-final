@@ -6,8 +6,6 @@ from sktime.forecasting.arima import AutoARIMA
 from sktime.forecasting.base import ForecastingHorizon
 from sktime.forecasting.naive import NaiveForecaster
 from sklearn.ensemble import RandomForestRegressor
-from sktime.forecasting.base.adapters import _StatsModelsAdapter
-from statsmodels.tsa.statespace.sarimax import SARIMAX as StatsSARIMAX
 from sklearn.metrics import mean_absolute_error, root_mean_squared_error
 import yfinance as yf
 from tensorflow import keras
