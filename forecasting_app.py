@@ -121,7 +121,8 @@ def main():
                     trend = st.selectbox("Trend type", ["add", "mul", None])
                     seasonal = st.selectbox("Seasonal type", ["add", "mul", None])
                     damped_trend = st.checkbox("Damped trend", value=False)
-                    seasonal_periods = st.number_input("Seasonal periods", min_value=1, value=1)
+                    seasonal_periods = st.number_input("Seasonal periods", min_value=2, value=12, 
+                                                     help="Must be greater than 1. For monthly data use 12, quarterly use 4, etc.")
                     model_params = {
                         "error": error,
                         "trend": trend,
@@ -237,6 +238,13 @@ def main():
                     df = fetch_stock_data(ticker, date_range[0].strftime('%Y-%m-%d'), 
                                          date_range[1].strftime('%Y-%m-%d'), freq)
                     if df is not None:
+                        # Convert frequency string to pandas frequency
+                        freq_map = {'1d': 'D', '1wk': 'W', '1mo': 'M'}
+                        pandas_freq = freq_map[freq]
+                        
+                        # Ensure the index has the correct frequency
+                        df.index = pd.DatetimeIndex(df.index).to_period(pandas_freq)
+                        
                         st.success(f"Successfully fetched data for {ticker}")
                     else:
                         st.error(f"Failed to fetch data for {ticker}")
@@ -278,7 +286,45 @@ def main():
                 st.error("Please ensure your CSV file is properly formatted with a date column and numeric data for forecasting.")
 
     st.header("Forecast Results")
-    fh = st.number_input("Number of periods to forecast", min_value=1, value=10)
+    
+    # Create a container for the parameters section
+    with st.container():
+        st.subheader("Forecast Configuration")
+        
+        # Create two columns for the input fields
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("""
+            **Forecast Horizon**  
+            Number of future periods to predict.  
+            *Higher values predict further into the future (e.g., more days, months, or years ahead) but may be less accurate.*
+            """)
+            fh = st.number_input("Number of periods to forecast", 
+                               min_value=1, 
+                               value=10,
+                               help="Choose based on your planning horizon (e.g., 12 for yearly data, 30 for daily data)")
+        
+        with col2:
+            st.markdown("""
+            **Model Complexity**  
+            Number of nodes in neural network models.  
+            *More nodes can learn complex patterns but may overfit the data.*  
+            *e.g., 5-50 nodes depending on data size*
+            """)
+            ml_nodes = st.number_input("Number of nodes for ML models", 
+                                     min_value=1, 
+                                     value=20,
+                                     help="""This controls the number of nodes/neurons in the RNN, LSTM, and XGBoost models.
+                                     - For small datasets (<100 points): 5-10 nodes
+                                     - For medium datasets (100-1000 points): 10-20 nodes
+                                     - For large datasets (>1000 points): 20-50 nodes
+                                     Start with fewer nodes and increase if needed.""",
+                                     step=5)
+    
+    # Add a separator
+    st.markdown("---")
+    
     run_forecast_button = st.button("Run Forecast")
     
     if run_forecast_button:
@@ -291,6 +337,9 @@ def main():
                     with st.status(f"Running {model} model...") as status:
                         try:
                             model_params = model_configs.get(model, {})
+                            # Add nodes parameter to ML models
+                            if model in ['RNN', 'LSTM', 'XGBoost']:
+                                model_params['units'] = ml_nodes
                             forecaster_func = MODEL_REGISTRY[model]
                             forecaster, y_pred, y_forecast = forecaster_func(y_train, y_test, fh, **model_params)
                             metrics = calculate_metrics(y_test.loc[y_pred.index], y_pred)
@@ -307,20 +356,16 @@ def main():
                     
                 # Plot all results
                 st.subheader("Forecast Comparison")
+                
                 metrics_df = pd.DataFrame({
                     model: res["metrics"]
                     for model, res in results.items()
                 }).T[["MAE", "RMSE", "MAPE"]]
                 styled_metrics = rank_and_style_metrics(metrics_df, sort_by="MAPE")
                 st.dataframe(styled_metrics)
+                
                 fig = plot_time_series(y_train, y_test, results, f"Forecast Comparison for {target_variable}")
                 st.pyplot(fig)
-
-                # st.subheader("Test Set Predictions")
-                # st.write(y_pred)
-
-                # st.subheader("Future Forecast Values")
-                # st.write(y_forecast)
             except Exception as e:
                 st.error(f"An error occurred during forecasting: {str(e)}")
         else:

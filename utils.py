@@ -263,19 +263,24 @@ def build_lstm_model(input_shape, units=50, learning_rate=0.001):
     return model
 
 def calculate_metrics(y_true, y_pred):
-    mae = mean_absolute_error(y_true, y_pred)
-    rmse = root_mean_squared_error(y_true, y_pred)
-    mape = np.mean(np.abs((y_true - y_pred) / y_true)) * 100
-    return {"MAE": mae, "RMSE": rmse, "MAPE": mape}
+    try:
+        mae = mean_absolute_error(y_true, y_pred)
+        rmse = root_mean_squared_error(y_true, y_pred)
+        # Handle division by zero in MAPE calculation
+        mape = np.mean(np.abs((y_true - y_pred) / np.maximum(np.abs(y_true), 1e-10))) * 100
+        return {"MAE": mae, "RMSE": rmse, "MAPE": mape}
+    except Exception as e:
+        # Return default values if calculation fails
+        return {"MAE": float('nan'), "RMSE": float('nan'), "MAPE": float('nan')}
 
 def rank_and_style_metrics(metrics_df, sort_by="MAPE"):
     # Sort by selected metric (lower is better)
     sorted_df = metrics_df.sort_values(by=sort_by)
 
-    # Highlight best value (green background) for each column
+    # Highlight best value with a color that works in dark mode
     def highlight_best(s):
         is_min = s == s.min()
-        return ['background-color: lightgreen' if v else '' for v in is_min]
+        return ['background-color: #2d5a27' if v else '' for v in is_min]  # Dark green that works in dark mode
 
     styled = sorted_df.style.format("{:.2f}").apply(highlight_best, axis=0)
     return styled
