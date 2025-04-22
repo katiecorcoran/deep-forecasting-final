@@ -19,7 +19,9 @@ def plot_time_series(y_train, y_test, results, title):
     for model, result in results.items():
         y_pred = result['y_pred']
         y_forecast = result['y_forecast']
-        ax.plot(y_pred.index.to_timestamp(), y_pred.values, label=f"{model} Test Predictions")
+        # y_pred may be empty for a multioutput strategy
+        if not y_pred.empty:
+            ax.plot(y_pred.index.to_timestamp(), y_pred.values, label=f"{model} Test Predictions")
         ax.plot(y_forecast.index.to_timestamp(), y_forecast.values, label=f"{model} Forecast")
     plt.legend()
     plt.title(title)
@@ -57,6 +59,9 @@ def get_model_help_text(model):
         return """
         **Random Forest Parameters:**
         - `n_lags`: Number of previous observations used as features
+        - `strategy`: Forecasting strategy:
+            - `'multistep'`: Predict multiple steps ahead
+            - `'multioutput'`: Predict multiple outputs at once
         """
     elif model == "RNN":
         return """
@@ -66,6 +71,9 @@ def get_model_help_text(model):
         - `units`: Number of RNN units (neurons) in the layer.
         - `n_epochs`: Number of training epochs.
         - `batch_size`: Number of samples per training batch.
+        - `strategy`: Forecasting strategy:
+            - `'multistep'`: Predict multiple steps ahead.
+            - `'multioutput'`: Predict multiple outputs at once.
         """
     elif model == "LSTM":
         return """
@@ -75,6 +83,9 @@ def get_model_help_text(model):
         - `learning_rate`: Learning rate for the optimizer. Lower values = slower learning but more stability.
         - `n_epochs`: Number of times the model trains on the full dataset.
         - `n_lags`: Number of past time steps used as input.
+        - `strategy`: Forecasting strategy:
+            - `'multistep'`: Predict multiple steps ahead.
+            - `'multioutput'`: Predict multiple outputs at once.
         """
     elif model == "XGBoost":
         return """
@@ -84,6 +95,9 @@ def get_model_help_text(model):
         - `max_depth`: Maximum tree depth. Higher = more complex trees.
         - `learning_rate`: Step size shrinkage used to prevent overfitting.
         - `n_lags`: Number of previous time steps used as input features.
+        - `strategy`: Forecasting strategy:
+            - `'multistep'`: Predict multiple steps ahead.
+            - `'multioutput'`: Predict multiple outputs at once.
         """
     return ""
 
@@ -171,7 +185,8 @@ def main():
                     if st.checkbox(f"Show help for {model} parameters", key=f"{model}_help"):
                         st.info(get_model_help_text(model))
                     n_lags = st.number_input("Number of lags", min_value=1, value=5)
-                    model_params = {"n_lags": n_lags}
+                    multi_strategy = st.selectbox("Forecasting strategy", ["multistep", "multioutput"])
+                    model_params = {"n_lags": n_lags, "strategy": multi_strategy}
                 elif model == "RNN":
                     if st.checkbox(f"Show help for {model} parameters", key=f"{model}_help"):
                         st.info(get_model_help_text(model))
@@ -179,7 +194,8 @@ def main():
                     units = st.number_input("Number of RNN units", min_value=1, value=50)
                     n_epochs = st.number_input("Number of epochs", min_value=1, value=10)
                     batch_size = st.number_input("Batch size", min_value=1, value=32)
-                    model_params = {"n_lags": n_lags, "n_epochs": n_epochs, "batch_size": batch_size, "units": units}
+                    multi_strategy = st.selectbox("Forecasting strategy", ["multistep", "multioutput"])
+                    model_params = {"n_lags": n_lags, "n_epochs": n_epochs, "batch_size": batch_size, "units": units, "strategy": multi_strategy}
                 elif model == "LSTM":
                     if st.checkbox(f"Show help for {model} parameters", key=f"{model}_help"):
                         st.info(get_model_help_text(model))
@@ -187,11 +203,13 @@ def main():
                     lstm_learning_rate = st.number_input("LSTM Learning Rate", min_value=0.0001, value=0.001, format="%.4f")
                     lstm_epochs = st.number_input("LSTM Training Epochs", min_value=10, value=50)
                     lstm_n_lags = st.number_input("LSTM Number of Lags", min_value=1, value=10)
+                    multi_strategy = st.selectbox("Forecasting strategy", ["multistep", "multioutput"])
                     model_params = {
                         "units": lstm_units,
                         "learning_rate": lstm_learning_rate,
                         "n_epochs": lstm_epochs,
                         "n_lags": lstm_n_lags,
+                        "strategy": multi_strategy,
                     }
                 elif model == "XGBoost":
                     if st.checkbox(f"Show help for {model} parameters", key=f"{model}_help"):
@@ -200,11 +218,13 @@ def main():
                     xgb_max_depth = st.number_input("XGBoost Max Depth", min_value=1, value=5)
                     xgb_learning_rate = st.number_input("XGBoost Learning Rate", min_value=0.01, value=0.1, format="%.2f")
                     xgb_n_lags = st.number_input("XGBoost Number of Lags", min_value=1, value=10)
+                    multi_strategy = st.selectbox("Forecasting strategy", ["multistep", "multioutput"])
                     model_params = {
                         "n_estimators": xgb_n_estimators,
                         "max_depth": xgb_max_depth,
                         "learning_rate": xgb_learning_rate,
                         "n_lags": xgb_n_lags,
+                        "strategy": multi_strategy,
                     }
             model_configs[model] = model_params       
     
@@ -342,6 +362,7 @@ def main():
                                 model_params['units'] = ml_nodes
                             forecaster_func = MODEL_REGISTRY[model]
                             forecaster, y_pred, y_forecast = forecaster_func(y_train, y_test, fh, **model_params)
+                            print(y_pred, y_forecast)
                             metrics = calculate_metrics(y_test.loc[y_pred.index], y_pred)
                             results[model] = {
                                 "forecaster": forecaster,

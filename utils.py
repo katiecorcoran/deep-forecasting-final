@@ -144,38 +144,104 @@ def run_rf_model(y_train, y_test, fh, **kwargs):
     
     return model, y_pred, y_forecast
 
+
+def build_multioutput_dataset(series, input_steps, output_steps):
+    series = np.array(series)
+    total_len = len(series)
+    n_samples = total_len - input_steps - output_steps + 1
+
+    X = np.array([series[i:i + input_steps] for i in range(n_samples)])
+    Y = np.array([series[i + input_steps:i + input_steps + output_steps] for i in range(n_samples)])
+
+    return X, Y
+
 def run_rnn_model(y_train, y_test, fh, **kwargs):
-    n_lags = kwargs.get('n_lags', 5)
+    Tx = kwargs.get('n_lags', 5)
     n_epochs = kwargs.get('n_epochs', 50)
     batch_size = kwargs.get('batch_size', 32)
     units = kwargs.get('units', 64)
+    strategy = kwargs.get('strategy', 'multistep')
     
-    df_train = create_lagged_features(y_train, n_lags)
-    X_train = df_train.drop(columns="y").values
-    y_train_trimmed = df_train["y"].values
-    X_train = X_train.reshape((X_train.shape[0], X_train.shape[1], 1))
+    def build_rnn_model(input_shape, units=50, learning_rate=0.001, output_steps=1):
+        model = Sequential()
+        model.add(SimpleRNN(units, activation='relu', input_shape=input_shape))
+        model.add(Dense(output_steps))
+        model.compile(optimizer=Adam(learning_rate=learning_rate), loss='mse')
+        return model
     
-    model = build_rnn_model((n_lags, 1), units)
-    model.fit(X_train, y_train_trimmed, epochs=n_epochs, batch_size=batch_size, verbose=0)
+    y_train_values = y_train.drop(columns="y").values
+    y_test_values = y_test.drop(columns="y").values
     
-    df_test = create_lagged_features(pd.concat([y_train[-n_lags:], y_test]), n_lags)
-    X_test = df_test.drop(columns="y").values
-    X_test = X_test.reshape((X_test.shape[0], X_test.shape[1], 1))
-    y_pred = pd.Series(model.predict(X_test).flatten(), index=df_test.index)
-
-    # Forecast future values recursively
-    forecast_input = list(pd.concat([y_train, y_test]).iloc[-n_lags:].values)
-    y_forecast_values = []
-    for _ in range(fh):
-        input_seq = np.array(forecast_input[-n_lags:]).reshape((1, n_lags, 1))
-        next_val = model.predict(input_seq).flatten()[0]
-        y_forecast_values.append(next_val)
-        forecast_input.append(next_val)
-
+    train_index = y_train.index
+    test_index = y_test.index
+    
+    if strategy == 'multistep':
+        X_train = np.array([y_train_values[t:t+Tx] for t in range(len(y_train_values) - Tx - 1 + 1)])
+        Y_train = np.array([y_train_values[t+Tx] for t in range(len(y_train_values) - Tx - 1 + 1)])
+        
+        X_test = np.array([y_test_values[t:t+Tx] for t in range(len(y_test_values) - Tx - 1 + 1)])
+        Y_test = np.array([y_test_values[t+Tx] for t in range(len(y_test_values) - Tx - 1 + 1)])
+        
+        X_train = X_train.reshape((X_train.shape[0], X_train.shape[1], 1))
+        X_test = X_test.reshape((X_test.shape[0], X_test.shape[1], 1))
+        model = build_rnn_model((Tx, 1), units=units)
+    elif strategy == 'multioutput':
+        X_train = np.array([y_train_values[t:t+Tx] for t in range(len(y_train_values) - Tx - fh + 1)])
+        Y_train = np.array([y_train_values[t+Tx:t+Tx+fh] for t in range(len(y_train_values) - Tx - fh + 1)])
+        
+        X_test = np.array([y_test_values[t:t+Tx] for t in range(len(y_test_values) - Tx - fh + 1)])
+        Y_test = np.array([y_test_values[t+Tx:t+Tx+fh] for t in range(len(y_test_values) - Tx - fh + 1)])
+        
+        X_train = X_train.reshape((X_train.shape[0], X_train.shape[1], 1))
+        X_test = X_test.reshape((X_test.shape[0], X_test.shape[1], 1))
+        model = build_rnn_model((Tx, 1), units=units, output_steps=fh)
+    else:
+        raise ValueError("Invalid strategy. Choose 'multistep' or 'multioutput'.")
+    
+    model.fit(
+        X_train, 
+        Y_train, 
+        epochs=n_epochs, 
+        batch_size=batch_size, 
+        verbose=0
+    )
+    test_predictions = model.predict(X_test)
+    if strategy == 'multistep':
+        n_preds = len(test_predictions)
+        pred_idx = pd.period_range(start=test_index[Tx], periods=n_preds, freq=y_test.index.freq)
+        y_pred = pd.Series(test_predictions.flatten(), index=pred_idx)
+    else:
+        # Extract only the first step of each forecast window
+        first_steps = test_predictions[:, 0]
+        # Create matching index
+        pred_start_idx = test_index[Tx]
+        pred_idx = pd.period_range(start=pred_start_idx, periods=len(first_steps), freq=y_test.index.freq)
+        y_pred = pd.Series(first_steps, index=pred_idx)
+    
+    combined_values = np.concatenate([y_train_values, y_test_values])
+    last_window = combined_values[-Tx:].reshape(-1)
+    future_forecasts = make_future_forecasts(model, last_window, fh, strategy)
     future_idx = pd.period_range(start=y_test.index[-1] + 1, periods=fh, freq=y_train.index.freq)
-    y_forecast = pd.Series(y_forecast_values, index=future_idx)
-
+    y_forecast = pd.Series(future_forecasts.flatten(), index=future_idx)
     return model, y_pred, y_forecast
+    
+def make_future_forecasts(model, last_window, fh, strategy):
+    if strategy == 'multistep':
+        curr = last_window.copy()
+        future_forecasts = []
+        for _ in range(fh):
+            curr_input = curr.reshape(1, curr.shape[0], 1)
+            pred = model.predict(curr_input, verbose=0)
+            future_forecasts.append(pred[0][0])
+            curr = np.roll(curr, -1)
+            curr[-1] = pred[0][0]
+        return np.array(future_forecasts).reshape(-1, 1)
+    elif strategy == 'multioutput':
+        curr_input = last_window.reshape(1, last_window.shape[0], 1)
+        future_forecasts = model.predict(curr_input)
+        return future_forecasts.flatten()
+    else:
+        raise ValueError("Invalid strategy. Choose 'multistep' or 'multioutput'.")
 
 def run_lstm_model(y_train, y_test, fh, **kwargs):
     n_lags = kwargs.get('n_lags', 5)
@@ -244,13 +310,6 @@ def run_xgboost_model(y_train, y_test, fh, **kwargs):
     future_idx = pd.period_range(start=y_test.index[-1] + 1, periods=fh, freq=y_train.index.freq)
     y_forecast = pd.Series(y_forecast_values, index=future_idx)
     return model, y_pred, y_forecast
-
-def build_rnn_model(input_shape, units=50, learning_rate=0.001):
-    model = Sequential()
-    model.add(SimpleRNN(units, activation='relu', input_shape=input_shape))
-    model.add(Dense(1))
-    model.compile(optimizer=Adam(learning_rate=learning_rate), loss='mse')
-    return model
 
 def build_lstm_model(input_shape, units=50, learning_rate=0.001):
     model = Sequential()
