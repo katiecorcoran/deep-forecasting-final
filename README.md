@@ -51,7 +51,3 @@ Enter a stock ticker (e.g., `AAPL`, `GOOGL`) to fetch historical stock data usin
 - pandas, numpy, scikit-learn, TensorFlow for data processing and modeling
 - sktime and statsmodels for classical forecasting
 - yfinance for real-time stock data
-
-## Folder Structure
-
-/app |-- main.py |-- model_utils.py |-- data/ |-- energy.csv |-- README.md
