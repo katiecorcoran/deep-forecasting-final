@@ -9,8 +9,8 @@ This web app allows users to upload and forecast time series data using a variet
   - Energy output data (preloaded)
   - Yahoo Finance data (downloaded using a ticker)
 - Select from a variety of models:
-  - Naive, Drift, ETS, ARIMA, SARIMA
-  - Random Forest, RNN, LSTM
+  - Naive, Drift, ETS, ARIMA
+  - Random Forest, XGBoost, RNN, LSTM
 - Choose forecasting horizon and model hyperparameters
 - Visualize forecast results alongside actual data
 
@@ -43,7 +43,6 @@ Enter a stock ticker (e.g., `AAPL`, `GOOGL`) to fetch historical stock data usin
 3. Run the model
 4. View forecasts
    - Interactive plots of past data and forecasts
-   - Optionally download results
 
 ## Tech Stack
 
@@ -51,7 +50,3 @@ Enter a stock ticker (e.g., `AAPL`, `GOOGL`) to fetch historical stock data usin
 - pandas, numpy, scikit-learn, TensorFlow for data processing and modeling
 - sktime and statsmodels for classical forecasting
 - yfinance for real-time stock data
-
-## Folder Structure
-
-/app |-- main.py |-- model_utils.py |-- data/ |-- energy.csv |-- README.md
