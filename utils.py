@@ -155,17 +155,28 @@ def build_multioutput_dataset(series, input_steps, output_steps):
 
     return X, Y
 
-def run_rnn_model(y_train, y_test, fh, **kwargs):
+def run_neural_net_model(y_train, y_test, fh, **kwargs):
     Tx = kwargs.get('n_lags', 5)
     n_epochs = kwargs.get('n_epochs', 50)
     batch_size = kwargs.get('batch_size', 32)
     units = kwargs.get('units', 64)
-    strategy = kwargs.get('strategy', 'multistep')
-    
+    learning_rate = kwargs.get('learning_rate', 0.001)
+    model_type = kwargs.get('model_type', 'rnn')
+
     def build_rnn_model(input_shape, units=50, learning_rate=0.001, output_steps=1):
         model = Sequential()
         model.add(SimpleRNN(units, activation='relu', input_shape=input_shape))
         model.add(Dense(output_steps))
+        model.compile(optimizer=Adam(learning_rate=learning_rate), loss='mse')
+        return model
+    
+    def build_lstm_model(input_shape, units=50, learning_rate=0.001):
+        model = Sequential()
+        model.add(LSTM(units, activation='relu', input_shape=input_shape, return_sequences=True))
+        model.add(Dropout(0.2))
+        model.add(LSTM(units//2, activation='relu'))
+        model.add(Dropout(0.2))
+        model.add(Dense(1))
         model.compile(optimizer=Adam(learning_rate=learning_rate), loss='mse')
         return model
     
@@ -175,28 +186,18 @@ def run_rnn_model(y_train, y_test, fh, **kwargs):
     train_index = y_train.index
     test_index = y_test.index
     
-    if strategy == 'multistep':
-        X_train = np.array([y_train_values[t:t+Tx] for t in range(len(y_train_values) - Tx - 1 + 1)])
-        Y_train = np.array([y_train_values[t+Tx] for t in range(len(y_train_values) - Tx - 1 + 1)])
-        
-        X_test = np.array([y_test_values[t:t+Tx] for t in range(len(y_test_values) - Tx - 1 + 1)])
-        Y_test = np.array([y_test_values[t+Tx] for t in range(len(y_test_values) - Tx - 1 + 1)])
-        
-        X_train = X_train.reshape((X_train.shape[0], X_train.shape[1], 1))
-        X_test = X_test.reshape((X_test.shape[0], X_test.shape[1], 1))
+    X_train = np.array([y_train_values[t:t+Tx] for t in range(len(y_train_values) - Tx - 1 + 1)])
+    Y_train = np.array([y_train_values[t+Tx] for t in range(len(y_train_values) - Tx - 1 + 1)])
+    
+    X_test = np.array([y_test_values[t:t+Tx] for t in range(len(y_test_values) - Tx - 1 + 1)])
+    Y_test = np.array([y_test_values[t+Tx] for t in range(len(y_test_values) - Tx - 1 + 1)])
+    
+    X_train = X_train.reshape((X_train.shape[0], X_train.shape[1], 1))
+    X_test = X_test.reshape((X_test.shape[0], X_test.shape[1], 1))
+    if model_type.lower() == 'rnn':
         model = build_rnn_model((Tx, 1), units=units)
-    elif strategy == 'multioutput':
-        X_train = np.array([y_train_values[t:t+Tx] for t in range(len(y_train_values) - Tx - fh + 1)])
-        Y_train = np.array([y_train_values[t+Tx:t+Tx+fh] for t in range(len(y_train_values) - Tx - fh + 1)])
-        
-        X_test = np.array([y_test_values[t:t+Tx] for t in range(len(y_test_values) - Tx - fh + 1)])
-        Y_test = np.array([y_test_values[t+Tx:t+Tx+fh] for t in range(len(y_test_values) - Tx - fh + 1)])
-        
-        X_train = X_train.reshape((X_train.shape[0], X_train.shape[1], 1))
-        X_test = X_test.reshape((X_test.shape[0], X_test.shape[1], 1))
-        model = build_rnn_model((Tx, 1), units=units, output_steps=fh)
-    else:
-        raise ValueError("Invalid strategy. Choose 'multistep' or 'multioutput'.")
+    elif model_type.lower() == 'lstm':
+        model = build_lstm_model((Tx, 1), units=units, learning_rate=learning_rate)
     
     model.fit(
         X_train, 
@@ -206,75 +207,27 @@ def run_rnn_model(y_train, y_test, fh, **kwargs):
         verbose=0
     )
     test_predictions = model.predict(X_test)
-    if strategy == 'multistep':
-        n_preds = len(test_predictions)
-        pred_idx = pd.period_range(start=test_index[Tx], periods=n_preds, freq=y_test.index.freq)
-        y_pred = pd.Series(test_predictions.flatten(), index=pred_idx)
-    else:
-        # Extract only the first step of each forecast window
-        first_steps = test_predictions[:, 0]
-        # Create matching index
-        pred_start_idx = test_index[Tx]
-        pred_idx = pd.period_range(start=pred_start_idx, periods=len(first_steps), freq=y_test.index.freq)
-        y_pred = pd.Series(first_steps, index=pred_idx)
+    n_preds = len(test_predictions)
+    pred_idx = pd.period_range(start=test_index[Tx], periods=n_preds, freq=y_test.index.freq)
+    y_pred = pd.Series(test_predictions.flatten(), index=pred_idx)
     
     combined_values = np.concatenate([y_train_values, y_test_values])
     last_window = combined_values[-Tx:].reshape(-1)
-    future_forecasts = make_future_forecasts(model, last_window, fh, strategy)
+    future_forecasts = make_future_forecasts(model, last_window, fh)
     future_idx = pd.period_range(start=y_test.index[-1] + 1, periods=fh, freq=y_train.index.freq)
     y_forecast = pd.Series(future_forecasts.flatten(), index=future_idx)
     return model, y_pred, y_forecast
     
-def make_future_forecasts(model, last_window, fh, strategy):
-    if strategy == 'multistep':
-        curr = last_window.copy()
-        future_forecasts = []
-        for _ in range(fh):
-            curr_input = curr.reshape(1, curr.shape[0], 1)
-            pred = model.predict(curr_input, verbose=0)
-            future_forecasts.append(pred[0][0])
-            curr = np.roll(curr, -1)
-            curr[-1] = pred[0][0]
-        return np.array(future_forecasts).reshape(-1, 1)
-    elif strategy == 'multioutput':
-        curr_input = last_window.reshape(1, last_window.shape[0], 1)
-        future_forecasts = model.predict(curr_input)
-        return future_forecasts.flatten()
-    else:
-        raise ValueError("Invalid strategy. Choose 'multistep' or 'multioutput'.")
-
-def run_lstm_model(y_train, y_test, fh, **kwargs):
-    n_lags = kwargs.get('n_lags', 5)
-    n_epochs = kwargs.get('n_epochs', 50)
-    learning_rate = kwargs.get('learning_rate', 0.001)
-    units = kwargs.get('units', 64)
-    
-    df_train = create_lagged_features(y_train, n_lags)
-    X_train = df_train.drop(columns="y").values
-    y_train_trimmed = df_train["y"].values
-    X_train = X_train.reshape((X_train.shape[0], X_train.shape[1], 1))
-    
-    model = build_lstm_model((n_lags, 1), units, learning_rate)
-    model.fit(X_train, y_train_trimmed, epochs=n_epochs, batch_size=32, verbose=0)
-    
-    df_test = create_lagged_features(pd.concat([y_train[-n_lags:], y_test]), n_lags)
-    X_test = df_test.drop(columns="y").values
-    X_test = X_test.reshape((X_test.shape[0], X_test.shape[1], 1))
-    y_pred = pd.Series(model.predict(X_test).flatten(), index=df_test.index)
-
-    # Forecast future values recursively
-    forecast_input = list(pd.concat([y_train, y_test]).iloc[-n_lags:].values)
-    y_forecast_values = []
+def make_future_forecasts(model, last_window, fh):
+    curr = last_window.copy()
+    future_forecasts = []
     for _ in range(fh):
-        input_seq = np.array(forecast_input[-n_lags:]).reshape((1, n_lags, 1))
-        next_val = model.predict(input_seq).flatten()[0]
-        y_forecast_values.append(next_val)
-        forecast_input.append(next_val)
-
-    future_idx = pd.period_range(start=y_test.index[-1] + 1, periods=fh, freq=y_train.index.freq)
-    y_forecast = pd.Series(y_forecast_values, index=future_idx)
-
-    return model, y_pred, y_forecast
+        curr_input = curr.reshape(1, curr.shape[0], 1)
+        pred = model.predict(curr_input, verbose=0)
+        future_forecasts.append(pred[0][0])
+        curr = np.roll(curr, -1)
+        curr[-1] = pred[0][0]
+    return np.array(future_forecasts).reshape(-1, 1)
 
 def run_xgboost_model(y_train, y_test, fh, **kwargs):
     n_lags = kwargs.get('n_lags', 5)
@@ -311,16 +264,6 @@ def run_xgboost_model(y_train, y_test, fh, **kwargs):
     y_forecast = pd.Series(y_forecast_values, index=future_idx)
     return model, y_pred, y_forecast
 
-def build_lstm_model(input_shape, units=50, learning_rate=0.001):
-    model = Sequential()
-    model.add(LSTM(units, activation='relu', input_shape=input_shape, return_sequences=True))
-    model.add(Dropout(0.2))
-    model.add(LSTM(units//2, activation='relu'))
-    model.add(Dropout(0.2))
-    model.add(Dense(1))
-    model.compile(optimizer=Adam(learning_rate=learning_rate), loss='mse')
-    return model
-
 def calculate_metrics(y_true, y_pred):
     try:
         mae = mean_absolute_error(y_true, y_pred)
@@ -350,7 +293,6 @@ MODEL_REGISTRY = {
     'ARIMA': run_arima_model,
     # 'SARIMA': run_sarima_model,
     'RandomForest': run_rf_model,
-    'RNN': run_rnn_model,
-    'LSTM': run_lstm_model,
+    'NeuralNet': run_neural_net_model,
     'XGBoost': run_xgboost_model,
 }
